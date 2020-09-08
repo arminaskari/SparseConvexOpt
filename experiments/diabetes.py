@@ -9,6 +9,7 @@ sys.path.append('../SparseOpt/')
 import sparse_models as sm
 from helper import factor_decomp
 import matplotlib.pyplot as plt
+import pickle
 
 ## load data
 diabetes = load_diabetes()
@@ -19,7 +20,8 @@ print(X.shape)
 y = diabetes.target
 attribute_names = diabetes.feature_names
 description = diabetes.DESCR
- ###############################################
+###############################################
+rank = int(sys.argv[1])
 
 n, m = X.shape[0], X.shape[1]
     
@@ -27,7 +29,7 @@ train_du, train_l1, train_l1f = [], [], []
 test_du, test_l1, test_l1f = [], [], []
 
 ## train models
-for i in range(1):
+for i in range(20):
     X_train, X_test, y_train, y_test = \
         train_test_split(X, y, test_size=0.2, 
                          random_state=i)
@@ -35,7 +37,7 @@ for i in range(1):
 
     # perform factor decomp for dual problem
     Sigma = X_train.T @ X_train
-    D, L, _ = factor_decomp(Sigma, rank=5)
+    D, L, _ = factor_decomp(Sigma, rank=rank)
     Q = D + L @ L.T
     
     Xtilde = scipy.linalg.sqrtm(Q)
@@ -72,22 +74,30 @@ for i in range(1):
     test_l1f.append([err(X_test, y_test, w) for w in w_l1f])
 
 
-    plt.figure()
-    plt.subplot(2,1,1)
-    plt.title('Train')
-    plt.plot(train_du[0],'r-')
-    plt.plot(train_l1[0],'b-')
-    plt.plot(train_l1f[0],'k-')
-    plt.legend(['Dual', 'Lasso primalize', 'Lasso factor primalize'])
-    plt.subplot(2,1,2)
-    plt.title('Test')
-    plt.plot(test_du[0],'r-')
-    plt.plot(test_l1[0],'b-')
-    plt.plot(test_l1f[0],'k-')
-    plt.legend(['Dual', 'Lasso primalize', 'Lasso factor primalize'])
-    plt.xlabel('Sparsity (k)')
-    plt.ylabel('MSE')
-    plt.show()
+#     plt.figure()
+#     plt.subplot(2,1,1)
+#     plt.title('Train')
+#     plt.plot(train_du[0],'r-')
+#     plt.plot(train_l1[0],'b-')
+#     plt.plot(train_l1f[0],'k-')
+#     plt.legend(['Dual', 'Lasso primalize', 'Lasso factor primalize'])
+#     plt.subplot(2,1,2)
+#     plt.title('Test')
+#     plt.plot(test_du[0],'r-')
+#     plt.plot(test_l1[0],'b-')
+#     plt.plot(test_l1f[0],'k-')
+#     plt.legend(['Dual', 'Lasso primalize', 'Lasso factor primalize'])
+#     plt.xlabel('Sparsity (k)')
+#     plt.ylabel('MSE')
+#     plt.show()
     
     
-    import pdb; pdb.set_trace()
+#     import pdb; pdb.set_trace()
+
+## save data
+train_res = {'du': train_du, 'l1': train_l1, 'l1f': train_l1f}
+test_res = {'du': test_du, 'l1': test_l1, 'l1f': test_l1f}
+res = {'train': train_res, 'test': test_res}
+filename = '../results/diabetes_' + str(rank) + '.pkl'
+with open(filename, 'wb') as handle:
+    pickle.dump(res, handle)
