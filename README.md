@@ -1,1 +1,1 @@
-# SparseFactorModel
+# SparseConvexOpt
