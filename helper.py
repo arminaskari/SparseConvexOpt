@@ -32,6 +32,8 @@ def generate_factor_model(m, r):
         L = np.random.randn(m,r)
     p = np.random.randn(m)
     
+    assert np.all(np.diag(D) > 0)
+    
     return D, L, p
 
                 
@@ -45,10 +47,10 @@ def factor_model_to_ls(D, L, sparsity_lvl = 0.2):
     beta = 10 * np.random.randn(m)
     indices = np.random.choice(np.arange(m), 
                                replace=False,
-                               size=int(m * sparsity_lvl))
+                               size=int(m * (1-sparsity_lvl)))
     beta[indices] = 0
     
-    y = X @ beta + np.random.randn(m)
+    y = X @ beta # + np.random.randn(m)
     
     return X, y
     

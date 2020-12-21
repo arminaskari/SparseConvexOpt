@@ -3,11 +3,15 @@ import numpy as np
 import cvxpy as cp
 import scipy
 from sklearn.linear_model import LassoLars, lars_path
+from scipy.optimize import minimize
+from scipy.optimize import linprog
+
 
 def sum_top_k(x, k):
     """ Sum of top k entries of vector x """
     idx = x.argsort()[-k:][::-1]
     return sum(x[idx]), idx
+
 
 def kbits(n, k):
     """ Returns all sets of n choose k"""
@@ -20,207 +24,346 @@ def kbits(n, k):
     return result
 
 
-def primalize(Q, p, supp):
-    """ Get primal solution based on support """
-    
-    if not isinstance(supp, list):
-        supp = [supp]  
-    
-    m = Q.shape[0]
-    soln_k, costs_k = [], []
-    
-    for s in supp:
-        s.sort()
-        Qs = Q[s,:][:,s]
-        ps = p[s]
-        
-        # optimal soln/cost for given support
-        xstar = np.zeros(m)
-        
-        ## should replace with minimum norm solution
-        try:
-            soln = -np.linalg.inv(Qs) @ ps
-        except:
-            raise ValueError
-            soln = -np.linalg.inv(Qs + 0.01 * np.eye(len(s))) @ ps
-        xstar[s] = soln
-        cost = 1/2 * ps.T @ soln
-        
-        soln_k.append(xstar)
-        costs_k.append(cost)
-    
-    return costs_k, soln_k
+def l0_constrained(params, k, l2constr=False):
+    """ Solve l0 constrained problem """
 
+    # unpack parameters
+    if params['loss'] == 'l2':
 
-def l0_bruteforce(Q, p, k):
-    """ Brute Force solution to l0 constr QP """
-    
-    if not isinstance(k, list):
-        k = [k]  
-        
-    supp_k, costs_k = [], []
-    
-    for kk in k:
-        m = len(p)
-        
-        # will take too long
-        if m > 16:
-            return [], []
-        
-        supports = kbits(m,kk)
+        m = len(params['beta'])
+        K = params['X'].T @ params['X'] + params['gamma'] * np.eye(m)
+        p = params['X'].T @ params['y']
+
+        # generate all possible supports
+        supports = kbits(m, k)
         costs = []
-        counter = 0
+        assert m <= 20
 
         # enumerate over all sets
-        for supp in supports:    
-            counter += 1
-            if counter % 100000 == 0:
-                print(counter)
+        for supp in supports:
             idx = np.where(np.array(supp) == 1)[0]
-            Qtilde = Q[idx,:][:,idx]
-            ptilde = p[idx]
-            M = np.linalg.inv(Qtilde)
-            costs.append(-1/2 * ptilde.T @ M @ ptilde)
+
+            if l2constr == False:
+                Ktilde = K[idx, :][:, idx]
+                ptilde = p[idx]
+
+                iK = np.linalg.inv(Ktilde)
+                costs.append(-1 / 2 * ptilde.T @ iK @ ptilde +
+                             1 / 2 * np.linalg.norm(params['y'])**2)
+            else:
+                w = cp.Variable(m)
+                constr = [w[idx] == 0, cp.sum_squares(w) <= params['gamma']]
+                cost = cp.sum_squares(params['X'] @ w - params['y'])
+                prob = cp.Problem(cp.Minimize(cost), constr)
+                prob.solve(solver=cp.MOSEK)
+                costs.append(cost.value)
 
         # get minimum cost solution
+        if len(costs) == 0:
+            import pdb
+            pdb.set_trace()
         idx_min = np.argmin(costs)
         one_hot = np.array(supports[idx_min])
-        supp_k.append(np.where(one_hot != 0)[0])
-        costs_k.append(costs[idx_min])
-    
-    return supp_k, costs_k
+        supp = np.where(one_hot != 0)[0]
+        cost = costs[idx_min]
+
+    return supp, cost
 
 
-def lbfgs_dual(D, L, p, k, verbose=False):
-    
-    if not isinstance(k, list):
-        k = [k]  
-        
-    supp_k, costs_k = [], []
-    
-    for kk in k:
-        m = len(p)
-        l = L.shape[1]
-        iD = np.linalg.inv(D)
-        
-        def fun(v):
-            # caluclate sum-top-k vector
-            t = np.zeros(m)
-            for i in range(m):
-                t[i] = 1/2 * iD[i,i] * np.linalg.norm(p[i] + L[i,:] @ v) ** 2
-            g, idx = sum_top_k(t, kk)
-            
-            #calculate derivative sum-top-k function
-            dg = 0
-            for i in idx:
-                dg += L[i,:] * iD[i,i] * (p[i] + L[i,:] @ v)
-                
-            # cost and derivative
-            f = 1/2 * np.linalg.norm(nu) ** 2 + g
-            df = nu + dg
-            return f, df
+def l0_penalized(lmbda, supp, cost):
+    """ Given penalty parameter lmbda, and the optimal
+    cost for each support, determine the new penalized
+    cost """
+
+    pen_costs = [c + lmbda * len(s) for c, s in zip(cost, supp)]
+    return np.min(pen_costs)
 
 
-def cvx_dual(D, L, p, k, verbose=False, solver='ecos'):
-    """ Dual solved using cvx """
-    
-    if not isinstance(k, list):
-        k = [k]  
-        
-    supp_k, costs_k = [], []
-    
-    for kk in k:
-        if verbose:
-            print(f'kk = {kk}')
-        m = len(p)
-        l = L.shape[1]
-        iD = np.linalg.inv(D)
+def dual_objective(params, var, method='constrained', l2constr=False):
+    """ Return dual objective for cvx for generic f """
 
-        # cvx problem
-        nu = cp.Variable(l)
-        
-        alpha = -1/2 * cp.multiply(1/np.diag(D), (p + L @ nu) ** 2)
-        cost = 0.5 * cp.sum_squares(nu) + cp.sum_largest(-alpha, kk)
+    # unpack parameters
+    X = params['X']
+    r = params['rank']
+    gamma, y = params['gamma'], params['y']
+    loss = params['loss']
 
-        prob = cp.Problem(cp.Minimize(cost))
-        if solver == 'scs':
-            prob.solve(solver=cp.SCS)
-        elif solver == 'ecos':
-            prob.solve(solver=cp.ECOS, verbose=verbose, abstol=1e-2, reltol=1e-2, feastol=1e-6)
+    # create cvx variables and objective
+    if l2constr == False:
+        l = var
+        if method == 'constrained':
+            k = params['target_sparsity']
+            cost = -1 / (2 * gamma) * cp.sum_largest((X.T @ l)**2, k)
+        elif method == 'penalized':
+            cost = cp.sum(
+                cp.minimum(
+                    np.zeros(len(l)),
+                    params['lmbda'] - 1 / (2 * gamma) * (X.T @ l)**2))
+    else:
+        n = len(y)
+        l = var[:n]
+        phi = var[n:-1]
+        eta = var[-1]
 
-        # recover support from t.value
-        support = alpha.value.argsort()[-kk:][::-1]
-        support.sort()
-        
-        supp_k.append(support)
-        costs_k.append(-cost.value)
+        if method == 'constrained':
+            k = params['target_sparsity']
+            cost = -1 / 2 * cp.sum_largest(phi, k) - eta * gamma / 2
+        elif method == 'penalized':
+            cost = cp.sum(
+                cp.minimum(
+                    np.zeros(len(z)),
+                    params['lmbda'] - 1 / 2 * cp.quad_over_lin(
+                        (X.T @ lmbda), eta)))
+                    
+    # add on the fenchel conjugate term
+    if loss == 'l2':
+        cost += -1 / 2 * cp.sum_squares(l) - l.T @ y
+    else:
+        raise NotImplementedError
 
-    return supp_k, costs_k
-
-    
-
-def lasso_solve(X, y, k):
-    """ Solve sparse QP with l1 penalization -- same as lars solve """
-
-    L1 = LassoLars(alpha=1e-6,fit_intercept=False, normalize=False)
-    L1.fit(X,y)
-    supp_k, l1_sparsity = [], []
-    for c in L1.coef_path_.T:
-        supp = np.where(c != 0)[0]
-        supp_k.append(supp)
-        l1_sparsity.append(len(supp))
-    indexes = [l1_sparsity.index(x) for x in set(l1_sparsity)]
-    l1_sparsity = np.array(l1_sparsity)[np.array(indexes)[1:]]
-    supp_k = [j for i, j in enumerate(supp_k) if i in indexes][1:]
-    
-        
-    return supp_k[:k]
-    
-    
-########### not in use ##############################
-def cvx_bidual(D, L, p, k, verbose=False,
-           solver=cp.SCS):
-    """ Bidual SDP solved using cvx """
-    
-    m = len(p)
-    l = L.shape[1]
-    Dhalf = np.linalg.inv(np.sqrt(D))
-    
-    ## cvx problem
-    t = cp.Variable(1)
-    x = cp.Variable(m)
-    X = cp.Variable((l+1,l+1), PSD=True)
-
-    Dx = cp.diag(x)
-    Sigma = Dhalf @ Dx @ Dhalf
-
-    cost = 1/2 * t
-    constraints = []
-    constraints = [X[0,0] == t + p.T @ Sigma @ p,
-                   X[0,1:l+1] == p.T @ Sigma @ L, 
-                   X[1:l+1, 0] == L.T @ Sigma @ p,
-                   X[1:l+1,1:l+1] == np.eye(l) + L.T @ Sigma @ L,
-                   X >> 0,
-                   cp.sum(x) <= k, x<= 1, x >= 0]
-
-    prob = cp.Problem(cp.Minimize(cost), constraints)
-    prob.solve(solver=solver, verbose=verbose)
-    
-    return x.value, 1/2 * t.value[0]
+    return cost
 
 
-def lars_solve(X, y, k):
-    """ Solve LASSO problem and get path """
-    
-    _, _, coefs = lars_path(X, y, method='lasso', verbose=True)
-    supp_k, l1_sparsity = [], []
-    for c in coefs.T:
-        supp = np.where(c != 0)[0]
-        supp_k.append(supp)
-        l1_sparsity.append(len(supp))
-    indexes = [l1_sparsity.index(x) for x in set(l1_sparsity)]
-    l1_sparsity = np.array(l1_sparsity)[np.array(indexes)[1:]]
-    supp_k = [j for i, j in enumerate(supp_k) if i in indexes][1:]
-    
-    return supp_k[:k]
+def dual_problem(params, method='constrained', l2constr=False):
+    """ Solve dual problem based on fenchel conjugate """
 
+    # create dual problem
+    constr = []
+    n = len(params['y'])
+    if l2constr:
+        var = cp.Variable(2*n + 1) #[zeta, phi, eta]
+        l = var[:n]
+        phi = var[n:-1]
+        eta = var[-1]
+        constr.append(eta >= 0)
+        for i in range(n):
+            constr.append(phi[i] >= cp.quad_over_lin((params['X'].T @ l)[i], eta))
+    else:
+        var = cp.Variable(n)
+    cost = dual_objective(params, var, method=method, l2constr=l2constr)
+    prob = cp.Problem(cp.Maximize(cost), constr)
+    prob.solve(solver=cp.ECOS)
+
+    return cost.value, var.value
+
+
+def bidual_problem(params, method='constrained', l2constr=False):
+    """ Solve bidual problem """
+
+    # unpack parameters
+    X, y = params['X'], params['y']
+    U, S, V = params['U'], params['S'], params['V']
+    gamma = params['gamma']
+    m = X.shape[1]
+
+    # bidual
+    vp = cp.Variable(m)
+    up = cp.Variable(m)
+    tp = cp.Variable(m)
+
+    constr = [0 <= up, up <= 1]
+
+    if params['loss'] == 'l2':
+        cost = 1 / 2 * cp.sum_squares(X @ vp - y)
+    else:
+        raise ValueError
+
+    # if problem is l2 constrained, add constr, else add l2 into
+    # objective
+    if l2constr:
+        constr.append(cp.sum(tp) <= gamma)
+    else:
+        cost += gamma / 2 * cp.sum(tp)
+
+    for i in range(m):
+        constr.append(tp[i] >= cp.quad_over_lin(vp[i], up[i]))
+
+    # modify bidual based on if constrained or penalized primal
+    if method == 'constrained':
+        k = params['target_sparsity']
+        constr.append(cp.sum(up) <= k)
+    elif method == 'penalized':
+        lmbda = params['lmbda']
+        cost += lmbda * cp.sum(up)
+    else:
+        raise ValueError
+
+    prob = cp.Problem(cp.Minimize(cost), constr)
+    prob.solve(solver=cp.MOSEK)
+
+    # non-convex formulation of bidual optimal variables
+    u = up.value
+    v = np.linalg.pinv(np.diag(u)) @ vp.value
+    z = S @ V.T @ np.diag(u) @ v
+    bdcost = 1 / 2 * np.linalg.norm(X @ np.diag(u) @ v -
+                                    y)**2
+    if not l2constr:
+        bdcost += gamma / 2 * v.T @ np.diag(u) @ v
+
+
+    if method == 'constrained':
+        return bdcost, v, z, u
+    else:
+        return bdcost + lmbda * np.sum(u), v, z, u
+
+
+"""
+def primal_lp_simplex(params, v, z):
+    # Solve lp for primalization via simplex 
+    ## NOTE: this has only been coded for the constrained
+    # case, not the penalized case. This code should not be used
+    # anyways since the IPM solver is much more reliable
+
+    # unpack params
+    U, S, V = params['U'], params['S'], params['V']
+    gamma = params['gamma']
+    y, t = params['y'], params['bidual_cost']
+    m, k = V.shape[0], params['target_sparsity']
+
+    # construct and sovle LP via simplex
+    Aeq = np.vstack((gamma / 2 * (v**2), S @ V.T * v))
+    if params['loss'] == 'l2':
+        beq = np.hstack((t - 1 / 2 * np.linalg.norm(U @ z - y)**2, z))
+    else:
+        raise NotImplementedError
+
+    Aineq = (np.ones(m)).reshape((1, m))
+    bineq = np.array([k])
+    c = np.random.randn(m)
+    bnds = list(((0, 1), ) * m)
+    res = linprog(c,
+                  A_ub=Aineq,
+                  b_ub=bineq,
+                  A_eq=Aeq,
+                  b_eq=beq,
+                  bounds=bnds,
+                  method='revised simplex',
+                  options={
+                      'tol': 1e-4,
+                      'autoscale': True
+                  })
+
+    if res.success:
+        return res.x
+    else:
+        print(res)
+        raise ValueError
+"""
+
+
+def primal_lp_ipm(params, v, z, method='constrained', l2constr=False):
+    """ solve LP primalization via IPM """
+
+    # unpack params
+    U, S, V = params['U'], params['S'], params['V']
+    gamma = params['gamma']
+    y, t = params['y'], params['bidual_cost']
+    m = V.shape[0]
+
+    # solve lp
+    u = cp.Variable(m)
+    constr = [0 <= u, u <= 1]
+    constr.append(S @ V.T @ cp.diag(u) @ v == z)
+
+    # modify bidual based on if constrained or penalized primal
+    if l2constr:
+        # add norm constr
+        constr.append(cp.sum(cp.multiply(u, v**2)) <= gamma)
+        if method == 'constrained':
+            k = params['target_sparsity']
+            constr.append(cp.sum(u) <= k)
+
+            # add epigraph constraint
+            if params['loss'] == 'l2':
+                pass
+            else:
+                raise ValueError
+        elif method == 'penalized':
+            lmbda = params['lmbda']
+
+            # add epigraph constraint
+            if params['loss'] == 'l2':
+                constr.append(lmbda * cp.sum(u) == t -
+                              1 / 2 * np.linalg.norm(U @ z - y)**2)
+            else:
+                raise ValueError
+    else:
+        if method == 'constrained':
+            k = params['target_sparsity']
+            constr.append(cp.sum(u) <= k)
+
+            # add epigraph constraint
+            if params['loss'] == 'l2':
+                 constr.append(gamma / 2 * u.T @ (v**2) == t -
+                              1 / 2 * np.linalg.norm(U @ z - y)**2)
+            else:
+                raise ValueError
+
+        elif method == 'penalized':
+            lmbda = params['lmbda']
+
+            # add epigraph constraint
+            if params['loss'] == 'l2':
+                constr.append(lmbda * cp.sum(u) +
+                              gamma / 2 * u.T @ (v**2) == t -
+                              1 / 2 * np.linalg.norm(U @ z - y)**2)
+            else:
+                raise ValueError
+
+    cost = np.random.rand(m).T @ u
+    # cost = cp.sum(u)
+    prob = cp.Problem(cp.Minimize(cost), constr)
+    prob.solve(solver=cp.ECOS, verbose=True, feastol=1e-7, abstol=1e-4)
+
+    return u.value
+
+
+def sf_primalize(params, method='constrained', l2constr=False):
+    """ primalize solution from bidual """
+
+    # unpack parameters
+    X, y = params['X'], params['y']
+    m, gamma = X.shape[1], params['gamma']
+
+    # bidual
+    bdcost, v, z, _ = bidual_problem(params, method=method, l2constr=l2constr)
+    params['bidual_cost'] = bdcost
+
+    # shapley folkman primalization via LP
+    # ubar = primal_lp_simplex(params, v, z)
+    ubar = primal_lp_ipm(params, v, z, method=method, l2constr=l2constr)
+
+    # primalize
+    S, Sc = [], []
+    for i in range(m):
+        if np.abs(ubar[i]) <= 1e-7 or np.abs(ubar[i] - 1) <= 1e-7:
+            Sc.append(i)
+        else:
+            S.append(i)
+
+    vtilde = v
+    utilde = ubar
+    for i in range(m):
+        if i in S:
+            vtilde[i] = ubar[i] * v[i]
+            utilde[i] = 1
+
+    # return cost of OPT
+    if l2constr:
+        if params['loss'] == 'l2':
+            cost = 1 / 2 * np.linalg.norm(X @ np.diag(utilde) @ vtilde - y)**2
+        else:
+            raise NotImplementedError
+
+    else:
+        if params['loss'] == 'l2':
+            cost = 1 / 2 * np.linalg.norm(
+                X @ np.diag(utilde) @ vtilde -
+                y)**2 + gamma / 2 * vtilde.T @ np.diag(utilde) @ vtilde
+        else:
+            raise NotImplementedError
+
+    if method == 'constrained':
+        return cost
+    else:
+        return cost + params['lmbda'] * np.sum(utilde)

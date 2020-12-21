@@ -3,11 +3,12 @@ sys.path.append('../SparseOpt/')
 import sparse_models as sm
 from helper import * 
 import matplotlib.pyplot as plt
+import pickle
 
 plt.rc('text', usetex=True)
 plt.rc('font', family='serif')
 hsv = plt.get_cmap('hsv')
-colors = hsv([0,0.6])
+colors = hsv([0,0.6,0.9])
 
 def set_box_color(bp, color):
     plt.setp(bp['boxes'], color=color)
@@ -32,18 +33,25 @@ legend = [r'$\phi(k)$: dual lower bound',
           r'$\ell_1$-reg: primalized']
 
 # different dimensionality and rank levels to test
-m_list = [10, 15]
+m_list = [15]
 s_list = [1e-1, 2e-1, 5e-1, 1]
+
+# m_list = [15]
+# s_list = [2e-1]
+n_trials = 300
+
 
 for m in m_list:
     
     ticks = [str(i+1) for i in range(m)]
     for s in s_list:
         
-        dual_rel_err = [[] for i in range(m)]
+        ds_rel_err = [[] for i in range(m)]
+        dc_rel_err = [[] for i in range(m)]
         l1_rel_err = [[] for i in range(m)]
         
-        for j in range(100):
+        
+        for j in range(n_trials):
             np.random.seed(j)
             r = int(m * s)
 
@@ -53,25 +61,36 @@ for m in m_list:
             Q = D + L @ L.T
 
             # sparse model solutions
-            supp_l0, cost_l0 = sm.l0_bruteforce(Q, X.T @ y,
+            supp_l0, cost_l0, betas_l0 = sm.l0_bruteforce(Q, X.T @ y,
                                             list(range(1,m+1)))
-            supp_du, cost_du = sm.cvx_dual(D, L, X.T @ y, 
-                                           list(range(1,m+1)))
+            supp_ds, cost_ds = sm.cvx_dual(D, L, X.T @ y, 
+                                           list(range(1,m+1)),
+                                           solver='ecos')
+            supp_dc, cost_dc = sm.socp_dual(D, L, X.T @ y, 
+                                           list(range(1,m+1)),
+                                           betas_l0,
+                                           solver='ecos')
             supp_l1  = sm.lasso_solve(X, y, list(range(1,m+1)))
+                        
 
             # primalize based on support recovered
-            primalized_cost_du, _ = sm.primalize(Q, X.T @ y, supp_du)
+            primalized_cost_ds, _ = sm.primalize(Q, X.T @ y, supp_ds)
+            primalized_cost_dc, _ = sm.primalize(Q, X.T @ y, supp_dc)
             primalized_cost_l1, _ = sm.primalize(Q, X.T @ y, supp_l1)
             
+            
             for jj in range(m):
-                dual_rel_err[jj].append(np.abs(primalized_cost_du[jj] - \
+                ds_rel_err[jj].append(np.abs(primalized_cost_ds[jj] - \
+                                              cost_l0[jj])/np.abs(cost_l0[jj]))
+                dc_rel_err[jj].append(np.abs(primalized_cost_dc[jj] - \
                                               cost_l0[jj])/np.abs(cost_l0[jj]))
                 l1_rel_err[jj].append(np.abs(primalized_cost_l1[jj] - \
                                               cost_l0[jj])/np.abs(cost_l0[jj]))
 
-        data_plt = [dual_rel_err, l1_rel_err]
-        offset = np.linspace(-0.25,0.25,len(data_plt))
-        label_str = [r'$\widetilde{\psi}(k)$: dual primalized',
+        data_plt = [ds_rel_err, dc_rel_err, l1_rel_err]
+        offset = np.linspace(-0.4,0.4,len(data_plt))
+        label_str = [r'$\widetilde{\psi}_1(k)$: dual primalized',
+                     r'$\widetilde{\psi}_2(k)$: socp primalized',
                      r'$\ell_1$-reg: primalized']
         
         off_cnt =0
@@ -93,7 +112,12 @@ for m in m_list:
         plt.ylabel('Relative Error')
         plt.xticks(range(0, len(ticks) * 2, 2), ticks)
         plt.xlabel('Sparsity level (k)')
-        plt.savefig(f'../figures/{m}_averaged_{s}.pdf')
+        
+        name = f'synthetic_{m}_averaged_{s}_samples_{n_trials}'
+        plt.savefig(f'../figures/{name}.pdf')
+        
+        with open(f'../results/{name}.pkl', 'wb') as f:
+            pickle.dump(data_plt, f)
 
 
    
