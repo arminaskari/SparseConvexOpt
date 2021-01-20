@@ -139,7 +139,7 @@ def vary_rank(params, lmbdas, loss, l0reg, gamma):
         soln_sparsity = []
         zeta_r, zeta = [], []
 
-        for r in range(1, np.min(params['Xtrue'].shape), 5):
+        for r in range(1, np.min(params['Xtrue'].shape)):
             # make rank-r approximation of X
             UU = U[:, :r] 
             SS = S[:r, :r]
