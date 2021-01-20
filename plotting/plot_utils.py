@@ -20,7 +20,87 @@ plt.rc('legend', fontsize=MEDIUM_SIZE)    # legend fontsize
 
 plt.rcParams['figure.figsize'] = [9, 7]
 
+def sf_bound(l0, l2, lmbdas, bidual, r, rank=False):
+    """ Compute upper of lower bound based on SF theorem """
 
+    xvals, bnd = [], []
+    if l0 == 'constr':
+        if l2 == 'constr':
+            offset = 3
+            if rank == False:
+                bnd_label = r'$p^{\ast \ast}(k + r + 3)$'
+            else:
+                bnd_label = r'$p^{\ast \ast}(k + r + 3, X_r) - \zeta_r$'
+        else:
+            offset = 2
+            if rank == False:
+                bnd_label = r'$p^{\ast \ast}(k + r + 2)$'
+            else:
+                bnd_label = r'$p^{\ast \ast}(k + r + 2) - \zeta_r$'
+
+        for l in lmbdas:
+            #if l - r - offset > 0:
+            #    xvals.append(l)
+            #    bnd.append(bidual[l-r-offset])
+            if l + r + offset < lmbdas[-1]:
+                bnd.append(bidual[l + r + offset])
+            else:
+                bnd.append(bidual[-1])
+
+        xvals = lmbdas
+
+    elif l0 == 'pen':
+        if l2 == 'constr':
+            offset = 2
+            if rank == False:
+                bnd_label = r'$p^{\ast \ast}(\lambda) + \lambda(r + 2)$'
+            else:
+                bnd_label = r'$p^{\ast \ast}(\lambda, X_r) + \lambda(r + 2) + \zeta$'
+
+        else:
+            offset = 1
+            if rank == False:
+                bnd_label = r'$p^{\ast \ast}(\lambda) + \lambda(r + 1)$'
+            else:
+                bnd_label = r'$p^{\ast \ast}(\lambda) + \lambda(r + 1) + \zeta$'
+
+        if rank == False:
+            bnd = [bd + l * (r + offset) for bd, l in zip(bidual, lmbdas)]
+        else:
+            # this is very confusing, but the code is set up such that the 3rd
+            # argument (lmbdas) is the one that varies, in this case we are
+            # letting the rank vary from 1,m so we artifically let lmbdas
+            # bet this and set r to be the value of l0 penalty
+
+            bnd = [bd + r * (l + offset) for bd, l in zip(bidual, lmbdas)]
+        
+        xvals = lmbdas
+
+
+    return xvals, bnd, bnd_label
+
+
+def get_parameters(file_str):
+    """ Get parameters from file string """
+
+    idx = [x.start() for x in re.finditer('_', file_str)]
+
+    # if file_str contains path to pkl files (eg '../results/*.pkl)
+    # start reading file name from the last '/'
+    if file_str.rfind('/res') != -1:
+        start_idx = file_str.rfind('/res') + 4
+    else:
+        start_idx = 0
+
+    n = int(file_str[start_idx:idx[0]])
+    m = int(file_str[idx[0] + 1:idx[1]])
+    r = int(file_str[idx[1] + 1:idx[2]])
+    loss = str(file_str[idx[2] + 1: idx[3]])
+    sparsity = float(file_str[idx[3] + 1:idx[4]])
+    method = str(file_str[idx[4] + 1:idx[5]])
+    gamma = float(file_str[idx[5] + 1:-4])
+
+    return n, m, r, loss, sparsity, method, gamma
 
 
 def plot_with_error(

@@ -4,23 +4,16 @@ import numpy as np
 import re
 import glob
 import math
+from plot_utils import sf_bound
 
 plt.rc('text', usetex=True)
 plt.rc('font', family='serif')
 hsv = plt.get_cmap('hsv')
 colors = hsv([0, 0.6, 0.9])
 
-
-def set_box_color(bp, color):
-    plt.setp(bp['boxes'], color=color)
-    plt.setp(bp['whiskers'], color=color)
-    plt.setp(bp['caps'], color=color)
-    plt.setp(bp['medians'], color=color)
-
-
 SMALL_SIZE = 10
 MEDIUM_SIZE = 12
-BIGGER_SIZE = 14
+BIGGER_SIZE = 22
 
 plt.rc('font', size=BIGGER_SIZE)  # controls default text sizes
 plt.rc('axes', titlesize=BIGGER_SIZE)  # fontsize of the axes title
@@ -28,102 +21,118 @@ plt.rc('axes', labelsize=BIGGER_SIZE)  # fontsize of the x and y labels
 plt.rc('xtick', labelsize=BIGGER_SIZE)  # fontsize of the tick labels
 plt.rc('ytick', labelsize=BIGGER_SIZE)  # fontsize of the tick labels
 plt.rc('legend', fontsize=BIGGER_SIZE)  # legend fontsize
-
+plt.rc('lines', linewidth=4) # line thickness
 
 def get_parameters(file_str):
     idx = [x.start() for x in re.finditer('_', file_str)]
 
     # if file_str contains path to pkl files (eg '../results/*.pkl)
     # start reading file name from the last '/'
-    if file_str.rfind('/') != -1:
-        start_idx = file_str.rfind('/') + 1
+    if file_str.rfind('/res') != -1:
+        start_idx = file_str.rfind('/res') + 4
     else:
         start_idx = 0
 
     n = int(file_str[start_idx:idx[0]])
     m = int(file_str[idx[0] + 1:idx[1]])
     r = int(file_str[idx[1] + 1:idx[2]])
-    gamma = float(file_str[idx[2] + 1:idx[3]])
-    true_sparsity = float(file_str[idx[3] + 1:idx[4]])
-    method = file_str[idx[4] + 1:-4]
+    loss = str(file_str[idx[2] + 1:idx[3]])
+    sparsity = float(file_str[idx[3] + 1:idx[4]])
+    method = str(file_str[idx[4] + 1:idx[5]])
+    gamma = float(file_str[idx[5] + 1:-4])
 
-    return n, m, r, gamma, true_sparsity, method
+    return n, m, r, loss, sparsity, method, gamma
 
 
 if __name__ == "__main__":
 
     # import all data
-    files = glob.glob('../results/synthetic/*.pkl')
-    idx_to_keep = []
-    for i, f in enumerate(files):
-        n, m, r, gamma, true_sparsity, method = get_parameters(f)
+    l2reg = ['constr', 'pen']
+    l0reg = ['constr', 'pen']
+    prefix_str = '/Users/aaskari/github-repos/SparseConvexOpt'
+    for l2 in l2reg:
+        for l0 in l0reg:
+            files = glob.glob(
+                f'{prefix_str}/results/synthetic/l2{l2}/l0{l0}/*.pkl')
+            if len(files) > 0:
+                for f in files:
 
-        # condition for which files to keep to make plots
-        if method == 'constrained' and n == 100 and m == 20 and gamma == 0.1 and true_sparsity == 0.2:
-            idx_to_keep.append(i)
-            file_name = f'{n}_{m}_X_{gamma}_{true_sparsity}_{method}'
+                    # unpack params
+                    _, m, r, _, _, low_rank, _ = get_parameters(f)
+                    save_str = f'l0{l0}_l2{l2}_{f[f.rfind("/res") + 5:-4]}'
+                    res = pickle.load(open(f, "rb"))
+                    bidual, opt, lmbdas = res['bd'], res['opt'], res['lmbdas']
+                    xvals, bnd, bnd_label = sf_bound(l0, l2, lmbdas, bidual, r)
 
-    files_to_plot = [files[i] for i in idx_to_keep]
-    files_to_plot.sort()
+                    saved_plots = glob.glob(
+                        f'{prefix_str}/figures/{save_str}.pdf')
+                    # plot results
+                    plt.figure()
+                    if l0 == 'constr':
+                        bd_label = r'$p^{\ast \ast}(k)$'
+                    else:
+                        bd_label = r'$p^{\ast \ast}(\lambda)$'
+                    
+                    mean = np.array([np.mean(o) for o in opt])
+                    std = np.array([np.std(o) for o in opt])
 
-    # plot data for specific files
-    counter = 0
-    fig, ax = plt.subplots(nrows=2,
-                           ncols=math.ceil(len(files_to_plot) / 2),
-                           figsize=(12, 7))
-    for row in ax:
-        for col in row:
-            # since we add extra columns if we have odd number, need the if
-            # statement
-            if counter <= len(files_to_plot)-1:
-                f = files_to_plot[counter]
-                res = pickle.load(open(f, "rb"))
-                n, m, r, gamma, true_sparsity, method = get_parameters(f)
-
-                primal, bidual, opt = res['primal'], res['bidual'], res[
-                    'primalized']
-                if method == 'constrained':
-                    k_vals = range(1, m + 1)
-                    col.plot(k_vals, primal, 'k-', label=r'$p^{\ast}(k)$')
-                    col.plot(k_vals, bidual, 'b-', label=r'$p^{\ast \ast}(k)$')
-                    col.plot(k_vals, opt, 'r-', label=r'Primalization')
-
-                    lb = []
-                    for k in k_vals:
-                        if k + r + 2 >= m:
-                            lb.append(primal[-1])
-                        else:
-                            lb.append(primal[k + r + 2])
-                    col.plot(k_vals, lb, 'k--', label=r'$p^\ast (k+r+2)$')
-
-                elif method == 'penalized':
-                    lmbdas = res['lmbdas']
-                    col.plot(lmbdas,
-                             primal,
-                             'k-',
-                             label=r'$p^{\ast}(\lambda)$')
-                    col.plot(lmbdas,
+                    if l0 == 'pen':
+                        plt.semilogx(1/lmbdas,
+                                     bidual,
+                                     'b-',
+                                     alpha=0.7,
+                                     label=bd_label)
+                        plt.semilogx(1/lmbdas, mean, 'r-', alpha=0.7, label=r'OPT')
+                        plt.fill_between(1/lmbdas,
+                                     mean + std,
+                                     mean - std,
+                                     color='r',
+                                     alpha=0.3)
+                        plt.semilogx(1/xvals, bnd, 'k--', label=bnd_label)
+                    else:
+                        plt.plot(lmbdas,
                              bidual,
                              'b-',
-                             label=r'$p^{\ast \ast}(\lambda)$')
-                    col.plot(lmbdas, opt, 'r-', label=r'Primalization')
+                             alpha=0.7,
+                             label=bd_label)
+                        plt.plot(lmbdas, mean, 'r-', alpha=0.7, label=r'OPT')
+                        plt.fill_between(lmbdas,
+                                     mean + std,
+                                     mean - std,
+                                     color='r',
+                                     alpha=0.3)
+                        plt.plot(xvals, bnd, 'k--', label=bnd_label)
 
-                    ub = [bd + l * (r + 1) for bd, l in zip(bidual, lmbdas)]
-                    col.plot(lmbdas,
-                             ub,
-                             'k--',
-                             label=r'$p^{\ast \ast}(\lambda) + \lambda (r+1)$')
-                
-                col.legend(frameon=False)
-                col.set_title(
-                    f'n={n}, m={m}, r={r}, g={gamma}, s={true_sparsity}')
 
-                counter += 1
+                    # shaded portion for opt
+                    if l0 == 'constr':
+                        plt.xlabel(r'$k$')
+                    else:
+                        plt.xlabel(r'$1/\lambda$')
+                    plt.legend()
+                    plt.savefig(f'{prefix_str}/figures/{save_str}.pdf')
+                    plt.close()
 
-    if method == 'constrained':
-        fig.text(0.5, 0.04, r'$k$', ha='center', va='center')
-    else:
-        fig.text(0.5, 0.04, r'$\lambda$', ha='center', va='center')
-
-    plt.savefig(f'../figures/{file_name}.pdf')
-    plt.close()
+                    # if l2reg = constr, then make numerical rank bound plots
+                    if l2 == 'constr' and low_rank == 'soft':
+                        plt.figure()
+                        plt.plot(
+                            lmbdas,
+                            res['nr_ub'],
+                            'k-',
+                            label=r'$\sqrt{\gamma}\|\Delta X\nu_r^\ast\|_2$'
+                        )
+                        plt.plot(
+                            lmbdas,
+                            res['nr_lb'],
+                            'k--',
+                            label=r'$-\sqrt{\gamma}\|\Delta X \nu^\ast\|_2$'
+                        )
+                        if l0 == 'constr':
+                            plt.xlabel(r'$k$')
+                        else:
+                            plt.xlabel(r'$\lambda$')
+                        plt.legend()
+                        plt.savefig(
+                            f'{prefix_str}/figures/nr_{save_str}.pdf')
+                        plt.close()
