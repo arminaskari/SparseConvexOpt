@@ -4,42 +4,8 @@ import sparse_models as sm
 from sklearn.datasets import make_low_rank_matrix
 from sklearn.linear_model import lars_path
 
-def solve_l0(params, method='constrained', lmbdas=[], l2constr=False):
-    """ Solve l0 constrained or penalized problem given params """
-
-    cons_costs, pen_costs = [], []
-    opt_costs, bd_costs = [], []
-    supp = []
-    m = params['X'].shape[1]
-
-    # solve constrained problem
-    for k in range(1, m + 1):
-        s, c = sm.l0_constrained(params, k, l2constr=l2constr)
-        cons_costs.append(c)
-        supp.append(s)
-
-    # if constrained, change k, else chamge lmbda
-    if method == 'constrained':
-        hyperparams = range(1, m + 1)
-    elif method == 'penalized':
-        hyperparams = lmbdas
-
-    # solve l0 problem and dual
-    for h in hyperparams:
-        if method == 'constrained':
-            params['target_sparsity'] = k
-        elif method == 'penalized':
-            c = sm.l0_penalized(h, supp, cons_costs)
-            pen_costs.append(c)
-            params['lmbda'] = h
-        opt = sm.sf_primalize(params, method=method, l2constr=l2constr)
-        bd_costs.append(params['bidual_cost'])
-        opt_costs.append(opt)
-
-    if method == 'constrained':
-        return cons_costs, bd_costs, opt_costs
-    return pen_costs, bd_costs, opt_costs
-
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
 
 def svd_r(X, rank=None):
     """ Truncate matrix and make low rank """
@@ -54,7 +20,7 @@ def generate_data(n,
                   r,
                   ntest=100,
                   loss='l2',
-                  true_sparsity=0.2,
+                  sparsity=0.2,
                   gamma=1,
                   low_rank='hard'):
     """ Generate random data for regression """
@@ -68,39 +34,44 @@ def generate_data(n,
 
     # make data that is numerically low rank
     elif low_rank == 'soft':
-        Xfull = make_low_rank_matrix(n_samples=n+ntest,
+        Xfull = 10 * make_low_rank_matrix(n_samples=n+ntest,
                                  n_features=m,
                                  effective_rank=r,
-                                 tail_strength=0.5,
-                                 random_state=None)
+                                 tail_strength=1e-5,
+                                 random_state=1)
         Xtrue = Xfull[:n, :]
         Xtest = Xfull[n:, :]
 
     U, S, Vt = svd_r(Xtrue.copy(), rank=r)
     X = U @ S @ Vt
+    dX = Xtrue - X
 
     if low_rank == 'hard':
         Xtrue = X
+        dX = np.zeros(Xtrue.shape)
         UU, SS, VVt = svd_r(Xtest.copy(), rank=r)
-        Xtest = UU @ SS @ VVt
-        
+        Xtest = UU @ SS @ VVt 
     
-
     # generate synthetic data
-    if loss == 'l2':
-        beta_true = 10 * np.random.randn(m)
-        idx = np.random.choice(m, int(m * true_sparsity), replace=False)
-        u = np.zeros(m)
-        u[idx] = 1
-        beta_true = beta_true * u
+    beta_true = 5 * np.random.randn(m)
+    idx = np.random.choice(m, int(m * sparsity), replace=False)
+    u = np.zeros(m)
+    u[idx] = 1
+    beta_true = beta_true * u
+
+    if loss == 'l2': 
         y = X @ beta_true + np.random.randn(n)
         ytest = Xtest @ beta_true + np.random.randn(ntest)
+    elif loss == 'logistic':
+        y = 2 * np.round(sigmoid(X @ beta_true + np.random.randn(n))) - 1
+        ytest = 2 * np.round(sigmoid(Xtest @ beta_true + np.random.randn(ntest))) - 1
     else:
         raise NotImplementedError
 
     params = {
         'Xtrue': Xtrue,
         'Xtest': Xtest,
+        'dX': dX,
         'X': X,
         'U': U,
         'S': S,
@@ -111,7 +82,7 @@ def generate_data(n,
         'y': y,
         'ytest': ytest,
         'beta': beta_true,
-        'true_sparsity': true_sparsity,
+        'sparsity': sparsity,
         'low_rank': low_rank
     }
 
