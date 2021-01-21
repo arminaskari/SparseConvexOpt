@@ -4,6 +4,8 @@ import cvxpy as cp
 import scipy
 from sklearn.base import BaseEstimator
 from scipy.optimize import minimize
+#import ray
+import mkl
 #import mosek
 
 global_zero_tol = 5e-5  #tolerance for how small to consider number 0
@@ -14,7 +16,6 @@ mosek_params_light = {
     'MSK_DPAR_INTPNT_CO_TOL_PFEAS': 1e-9,
     'MSK_DPAR_INTPNT_CO_TOL_DFEAS': 1e-9
 }
-
 
 class SparseModel(BaseEstimator):
     """ SparseModel
@@ -33,7 +34,8 @@ class SparseModel(BaseEstimator):
                  lmbda=1,
                  l2reg='constr',
                  gamma=1,
-                 n_trials=20):
+                 n_trials=20, 
+                 threads=1):
         self.loss = loss
         self.l0reg = l0reg
         self.lmbda = lmbda
@@ -41,6 +43,10 @@ class SparseModel(BaseEstimator):
         self.gamma = gamma
         self.rank = 'full'
         self.n_trials = n_trials
+        
+        mkl.set_num_threads(threads)
+        mosek_params['MSK_IPAR_NUM_THREADS'] = threads
+        mosek_params_light['MSK_IPAR_NUM_THREADS'] = threads
 
         assert (loss in ['l2', 'hinge', 'logistic'])
         assert (l0reg in ['constr', 'pen'])
