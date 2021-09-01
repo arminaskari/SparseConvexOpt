@@ -7,7 +7,6 @@ The module solves the bidual problem and performs the primalization procedure.
 import itertools
 
 import cvxpy as cp
-import mkl
 import numpy as np
 import scipy
 from scipy.optimize import minimize
@@ -15,7 +14,6 @@ from sklearn.base import BaseEstimator
 
 from .helper import sigmoid
 
-# import mosek
 
 GLOBAL_ZERO_TOL = 5e-5  # tolerance for how small to consider number 0
 
@@ -58,10 +56,6 @@ class SparseModel(BaseEstimator):
         self.gamma = gamma
         self.rank = "full"
         self.n_trials = n_trials
-
-        mkl.set_num_threads(threads)
-        MOSEK_PARAMS["MSK_IPAR_NUM_THREADS"] = threads
-        MOSEK_PARAMS_LIGHT["MSK_IPAR_NUM_THREADS"] = threads
 
         assert loss in ["l2", "hinge", "logistic"]
         assert l0reg in ["constr", "pen"]
